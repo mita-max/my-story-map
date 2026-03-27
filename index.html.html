@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>人物關係圖</title>
+    <style>
+        :root {
+            --bg-color: #1a1a1d;
+            --panel-bg: #2d2d30;
+            --text-color: #d1d1d1;
+            --border-color: #4f4f53;
+            --font-family: 'Times New Roman', Times, serif, "Heiti TC", "Microsoft JhengHei";
+        }
+
+        body { font-family: var(--font-family); background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 0; display: flex; height: 100vh; overflow: hidden; }
+
+        /* 語言切換 */
+        #lang-switch { position: absolute; top: 10px; right: 10px; z-index: 100; display: flex; gap: 5px; }
+        #lang-switch button { padding: 4px 10px; font-size: 12px; background: #333; color: #aaa; border: 1px solid #555; cursor: pointer; border-radius: 4px; }
+
+        /* 側邊欄樣式 */
+        #character-panel, #relation-panel { width: 230px; background-color: var(--panel-bg); padding: 20px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; z-index: 50; }
+        #character-panel { border-right: 2px solid var(--border-color); }
+        #relation-panel { border-left: 2px solid var(--border-color); }
+
+        #main-canvas-container { flex-grow: 1; position: relative; background-color: var(--bg-color); overflow: auto; }
+        #map-nodes-container { width: 3000px; height: 3000px; position: absolute; top: 0; left: 0; }
+        #connection-layer { position: absolute; top: 0; left: 0; width: 3000px; height: 3000px; pointer-events: none; z-index: 5; }
+
+        /* 備註彈窗 */
+        #note-modal {
+            display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: #2d2d30; border: 2px solid #888; padding: 25px; z-index: 1000;
+            box-shadow: 0 0 40px rgba(0,0,0,0.9); width: 320px; text-align: center;
+        }
+        #note-textarea { width: 100%; height: 120px; background: #1a1a1d; color: #ddd; border: 1px solid #555; padding: 8px; margin-bottom: 10px; font-family: inherit; resize: none; box-sizing: border-box; }
+
+        /* 角色卡片樣式 */
+        .character-card { border: 1px solid var(--border-color); padding: 10px; cursor: grab; background-color: rgba(0,0,0,0.2); margin-bottom: 10px; text-align: center; }
+        .portrait-frame { width: 100px; height: 75px; border: 2px solid #555; background-color: #111; overflow: hidden; position: relative; margin: 0 auto 5px auto; }
+        .portrait-frame img { width: 100%; height: 100%; object-fit: cover; }
+        .map-node { position: absolute; cursor: move; z-index: 10; text-align: center; width: 100px; }
+        
+        button { padding: 8px; background-color: #444; border: 1px solid #666; color: #ddd; cursor: pointer; font-family: inherit; }
+        button:hover { background-color: #555; }
+        input, select { background: #222; color: #eee; border: 1px solid #444; padding: 6px; font-family: inherit; }
+        hr { border: 0; border-top: 1px solid var(--border-color); margin: 15px 0; }
+    </style>
+</head>
+<body>
+
+    <div id="lang-switch">
+        <button onclick="setLanguage('zh')">繁中</button>
+        <button onclick="setLanguage('en')">EN</button>
+    </div>
+
+    <div id="character-panel">
+        <h2 id="ui-db-title">角色資料庫</h2>
+        <input type="text" id="new-char-name" placeholder="名字">
+        <input type="file" id="new-char-photo" accept="image/*">
+        <button id="add-char-btn">新增角色</button>
+        <div id="character-list"></div>
+    </div>
+
+    <div id="main-canvas-container">
+        <svg id="connection-layer"></svg>
+        <div id="map-nodes-container"></div>
+    </div>
+
+    <div id="relation-panel">
+        <h2 id="ui-rel-title">建立關聯</h2>
+        <select id="relation-source"></select>
+        <select id="relation-target"></select>
+        <input type="text" id="relation-type" placeholder="關聯類型">
+        
+        <div style="display:flex; align-items:center; gap:10px;">
+            <label id="ui-color-label" style="font-size:0.8em;">連線顏色:</label>
+            <input type="color" id="line-color-picker" value="#888888" style="width:40px; border:none; background:none; cursor:pointer;">
+        </div>
+
+        <label style="font-size:0.8em;"><input type="checkbox" id="relation-arrow" checked> <span id="ui-arrow-label">顯示箭頭</span></label>
+        <button id="add-relation-btn">建立關聯</button>
+
+        <hr>
+
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+            <label id="ui-canvas-color-label" style="font-size:0.8em; color: #aaa;">畫布顏色:</label>
+            <input type="color" id="canvas-color-picker" value="#1a1a1d" style="width:100%; height:30px; cursor:pointer; background:none; border:1px solid #444; padding:0;">
+        </div>
+
+        <button id="save-btn" style="width: 100%; margin-top: 15px; background-color: #4a4a4a;">儲存關係圖</button>
+    </div>
+
+    <div id="note-modal">
+        <textarea id="note-textarea" placeholder="關於這個角色..."></textarea>
+        <br>
+        <button onclick="closeNote()">OK</button>
+    </div>
+
+    <canvas id="crop-canvas" style="display:none;" width="400" height="300"></canvas>
+    <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
+    
+    <script>
+        let characters = JSON.parse(localStorage.getItem('v7_chars')) || [];
+        let relations = JSON.parse(localStorage.getItem('v7_rels')) || [];
+        let nodesInMap = JSON.parse(localStorage.getItem('v7_nodes')) || [];
+        let currentEditingId = null;
+        const i18n = {
+            zh: { db: "角色資料庫", rel: "建立關聯", add: "新增角色", conn: "建立關聯", color: "連線顏色:", canvasColor: "畫布顏色:", arrow: "顯示箭頭", save: "儲存關係圖", namePlace: "名字", typePlace: "關聯類型", notePlace: "關於這個角色..." },
+            en: { db: "Database", rel: "Relations", add: "Add Character", conn: "Add Relation", color: "Line Color:", canvasColor: "Canvas Color:", arrow: "Show Arrow", save: "Export Map", namePlace: "Name", typePlace: "Relation Type", notePlace: "About this character..." }
+        };
+
+        function setLanguage(l) {
+            document.getElementById('ui-db-title').innerText = i18n[l].db;
+            document.getElementById('ui-rel-title').innerText = i18n[l].rel;
+            document.getElementById('add-char-btn').innerText = i18n[l].add;
+            document.getElementById('add-relation-btn').innerText = i18n[l].conn;
+            document.getElementById('ui-color-label').innerText = i18n[l].color;
+            document.getElementById('ui-canvas-color-label').innerText = i18n[l].canvasColor;
+            document.getElementById('ui-arrow-label').innerText = i18n[l].arrow;
+            document.getElementById('save-btn').innerText = i18n[l].save;
+            document.getElementById('new-char-name').placeholder = i18n[l].namePlace;
+            document.getElementById('relation-type').placeholder = i18n[l].typePlace;
+            document.getElementById('note-textarea').placeholder = i18n[l].notePlace;
+        }
+
+        function saveData() {
+            localStorage.setItem('v7_chars', JSON.stringify(characters));
+            localStorage.setItem('v7_rels', JSON.stringify(relations));
+            localStorage.setItem('v7_nodes', JSON.stringify(nodesInMap));
+        }
+
+        function openNote(id) {
+            currentEditingId = id;
+            const char = characters.find(c => c.id === id);
+            document.getElementById('note-textarea').value = char.note || "";
+            document.getElementById('note-modal').style.display = 'block';
+        }
+        function closeNote() {
+            const char = characters.find(c => c.id === currentEditingId);
+            if (char) char.note = document.getElementById('note-textarea').value;
+            document.getElementById('note-modal').style.display = 'none';
+            saveData();
+        }
+
+        function renderList() {
+            const list = document.getElementById('character-list');
+            const s1 = document.getElementById('relation-source');
+            const s2 = document.getElementById('relation-target');
+            list.innerHTML = ''; s1.innerHTML = ''; s2.innerHTML = '';
+            characters.forEach(c => {
+                const d = document.createElement('div');
+                d.className = 'character-card'; d.draggable = true;
+                d.innerHTML = `<div class="portrait-frame"><img src="${c.imageData}"></div><div>${c.name}</div>`;
+                d.ondragstart = (e) => e.dataTransfer.setData('text', c.id);
+                list.appendChild(d);
+                s1.add(new Option(c.name, c.id)); s2.add(new Option(c.name, c.id));
+            });
+        }
+
+        function renderMap() {
+            const container = document.getElementById('map-nodes-container');
+            container.innerHTML = '';
+            nodesInMap.forEach(n => {
+                const c = characters.find(char => char.id === n.id);
+                if (!c) return;
+                const d = document.createElement('div');
+                d.className = 'map-node';
+                d.style.left = n.x + 'px'; d.style.top = n.y + 'px';
+                d.innerHTML = `<div class="portrait-frame"><img src="${c.imageData}"></div><div style="font-size:0.9em; margin-top:3px;">${c.name}</div>`;
+                d.ondblclick = (e) => { e.stopPropagation(); openNote(c.id); };
+                d.onmousedown = (e) => {
+                    let ox = e.clientX - d.offsetLeft; let oy = e.clientY - d.offsetTop;
+                    document.onmousemove = (me) => {
+                        n.x = me.clientX - ox; n.y = me.clientY - oy;
+                        d.style.left = n.x + 'px'; d.style.top = n.y + 'px';
+                        drawLines();
+                    };
+                    document.onmouseup = () => { document.onmousemove = null; saveData(); };
+                };
+                container.appendChild(d);
+            });
+            drawLines();
+        }
+        function drawLines() {
+            const svg = document.getElementById('connection-layer');
+            const color = document.getElementById('line-color-picker').value;
+            svg.innerHTML = `<defs><marker id="arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="${color}" /></marker></defs>`;
+            relations.forEach(r => {
+                const n1 = nodesInMap.find(n => n.id === r.s);
+                const n2 = nodesInMap.find(n => n.id === r.t);
+                if (n1 && n2) {
+                    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                    const x1 = n1.x + 50, y1 = n1.y + 37, x2 = n2.x + 50, y2 = n2.y + 37;
+                    let d = `M ${x1} ${y1} L ${(x1+x2)/2 + 5} ${(y1+y2)/2 - 5} L ${x2} ${y2}`;
+                    p.setAttribute("d", d); p.setAttribute("stroke", color); p.setAttribute("fill", "none"); p.setAttribute("stroke-width", "2");
+                    if (r.arrow) p.setAttribute("marker-end", "url(#arrow)");
+                    svg.appendChild(p);
+                    const txt = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                    txt.setAttribute("x", (x1+x2)/2); txt.setAttribute("y", (y1+y2)/2 - 10);
+                    txt.setAttribute("fill", "#aaa"); txt.setAttribute("font-size", "10px");
+                    txt.setAttribute("text-anchor", "middle"); txt.textContent = r.type;
+                    svg.appendChild(txt);
+                }
+            });
+        }
+
+        // 畫布顏色
+        const canvasPicker = document.getElementById('canvas-color-picker');
+        const canvasContainer = document.getElementById('main-canvas-container');
+        const savedCanvasColor = localStorage.getItem('v7_canvas_color');
+        if (savedCanvasColor) { canvasPicker.value = savedCanvasColor; canvasContainer.style.backgroundColor = savedCanvasColor; }
+        canvasPicker.addEventListener('input', (e) => {
+            canvasContainer.style.backgroundColor = e.target.value;
+            localStorage.setItem('v7_canvas_color', e.target.value);
+        });
+
+        document.getElementById('add-char-btn').onclick = () => {
+            const name = document.getElementById('new-char-name').value;
+            const fileInput = document.getElementById('new-char-photo');
+            const file = fileInput.files[0];
+            if (!name || !file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.getElementById('crop-canvas');
+                    const ctx = canvas.getContext('2d');
+                    const targetRatio = 4 / 3;
+                    const imgRatio = img.width / img.height;
+                    let sw, sh, sx, sy;
+                    if (imgRatio > targetRatio) { sh = img.height; sw = img.height * targetRatio; sx = (img.width - sw) / 2; sy = 0; }
+                    else { sw = img.width; sh = img.width / targetRatio; sx = 0; sy = (img.height - sh) / 2; }
+                    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+                    characters.push({ id: 'c'+Date.now(), name, imageData: canvas.toDataURL('image/jpeg', 0.8), note: "" });
+                    saveData(); renderList();
+                    document.getElementById('new-char-name').value = ""; fileInput.value = ""; 
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        };
+
+        document.getElementById('add-relation-btn').onclick = () => {
+            const s = document.getElementById('relation-source').value;
+            const t = document.getElementById('relation-target').value;
+            const type = document.getElementById('relation-type').value;
+            const arrow = document.getElementById('relation-arrow').checked;
+            if (s && t && s !== t) { relations.push({ s, t, type, arrow }); saveData(); renderMap(); }
+        };
+
+        const canvas_el = document.getElementById('main-canvas-container');
+        canvas_el.ondragover = (e) => e.preventDefault();
+        canvas_el.ondrop = (e) => {
+            const id = e.dataTransfer.getData('text');
+            const rect = canvas_el.getBoundingClientRect();
+            const x = e.clientX - rect.left + canvas_el.scrollLeft - 50;
+            const y = e.clientY - rect.top + canvas_el.scrollTop - 37;
+            if (!nodesInMap.find(n => n.id === id)) { nodesInMap.push({ id, x, y }); saveData(); renderMap(); }
+        };
+
+        // 儲存地圖
+        document.getElementById('save-btn').onclick = () => {
+            html2canvas(document.getElementById('map-nodes-container'), {
+                backgroundColor: canvasContainer.style.backgroundColor
+            }).then(c => {
+                const a = document.createElement('a'); a.download = 'RelationshipMap.png'; a.href = c.toDataURL(); a.click();
+            });
+        };
+
+        window.onload = () => { renderList(); renderMap(); setLanguage('zh'); };
+    </script>
+</body>
+</html>
